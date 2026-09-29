@@ -8,7 +8,79 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- security(multisig): implement 14-day TTL expiration for pending signatures and approvals (#449)
+
 ### Added
+
+- **`cross-chain` (issue #455): LayerZero omnichain dispute bridging.** New
+  `layerzero` module lets decentralized arbitrators on remote chains deliver
+  dispute resolutions to Soroban through a LayerZero endpoint. The admin
+  registers the endpoint (`set_layerzero_endpoint`) and trusted peer
+  contracts per source chain (`set_trusted_peer`); the endpoint delivers
+  packets with `lz_receive(src_eid, sender, nonce, payload)`, which validates
+  the sender against the trusted-peer registry, enforces strictly-advancing
+  per-channel packet nonces (replays rejected with `StaleState`),
+  bounds-checks the versioned dispute payload (`parse_dispute_payload`),
+  refuses a dispute id that already settled (`AlreadyRefunded`), and emits
+  `DisputeResolvedEvent`. A mock-endpoint integration suite proves the real
+  auth path: only the registered endpoint calling in can pass
+  `require_auth`.
+- **`state-channel` (issue #488): Lightning-style pre-image reveal
+  mechanics.** New `hashlock` module locks a slice of a channel's free
+  escrow against `sha256(preimage)` (`add_hashlock_payment`) and settles it
+  when the preimage is revealed on-chain (`reveal_preimage`, permissionless,
+  `InvalidPreimage` on mismatch, `HtlcNotPending` on double reveal),
+  crediting the receiver's balance and emitting
+  `HashlockPaymentRevealedEvent` carrying the hashlock — never the secret.
+  `close_channel_with_preimage` ties the reveal into the close flow: the
+  sender's signed final state plus the receiver's preimage settle the
+  invoice atomically, with the receiver's payout becoming
+  `balance + amount` before the challenge window starts. Hashlock
+  reservations share the escrow ceiling with HTLC reservations
+  (`get_reserved_escrow`), so no combination of states, hops and invoices
+  can overdraw escrow.
+- **`governance` (issue #483): proposal simulation hooks.** Proposals can
+  carry a `SimulationReport` from a registered simulator contract
+  (`ProposalSimulator::simulate` dry-runs the exact calldata off-chain, the
+  on-chain side cannot): `propose_with_simulation` verifies the report's
+  simulator is the registered one (its `require_auth` co-signs the
+  creation), that `sim_hash` re-derives to the canonical
+  `sim_payload` binding this proposal id and this exact calldata, and that
+  the outcome is `SIM_OK` — a proposal the dry-run says would revert is
+  rejected at creation (`SimulationFailed`) and never reaches a vote.
+  `set_simulation_config` turns mandatory simulation on/off per body; when
+  mandatory, the plain `propose` path fails with `SimulationRequired`.
+  Reports are stored under their own key (`get_simulation_report`) so the
+  `Proposal` record shape is unchanged.
+- **`reputation` (issue #450): soulbound tokens for verified merchants.** New
+  `sbt` module mints non-transferable KYC / volume-tier credentials
+  (`Verified` / `Trusted` / `Premium`) bound to one address each, issued and
+  governed by the contract authority (`issue` / `revoke` / `slash`).
+  `transfer` and `approve` exist only to revert with typed errors
+  (`SbtNonTransferable` / `SbtApprovalDisabled`), so a credential can never
+  be bought, borrowed or farmed; a revoke burns the credential and writes a
+  permanent tombstone that blocks re-issue, while a slash flags it in place
+  as a public record.
+- **`reputation` (issue #452): on-chain credit scoring for buyers.** New
+  `credit_score` module maintains a dynamic 0–1000 score per buyer: the
+  escrow authority records successful completions (growth of 25% of the
+  remaining headroom per completion, `record_completion` with replay-protected
+  escrow ids) and fraudulent dispute losses (a 50%-of-current-score penalty,
+  `record_fraud`); scores decay 1% of the headroom above a floor of 100 per
+  ~10 days of inactivity and start neutral at 500. `get_score` is read-only,
+  and zero-fee tiers unlock by score (half fee at the gold cut-off, zero at
+  `zero_fee_tier`, both re-tunable by the authority via `set_score_config`).
+- **`reputation` (issue #451): tiered NFT dispute-resolution badges for
+  arbitrators.** New `accensa-reputation` contract tracks each arbitrator's
+  lifetime accurate dispute resolutions — recorded only by the arbiter
+  authority bound at initialization, keyed by caller-supplied dispute ids
+  with replay protection — and mints a non-transferable Bronze badge on the
+  first accepted resolution, upgrading it in place to Silver at 50 and Gold
+  at 100 accurate resolutions (`BadgeMintedEvent` / `BadgeUpgradedEvent`).
+- **Tiered Fee Hook**: Implemented Tiered Fee Assessment Hook in Refund-Vault-Factory Deployments (issue #375).
+- **Batch Transaction Pipeline**: Added Batch Transaction Execution Pipeline to Multisig-Account (issue #385).
+- **Zero-Knowledge Commitments**: Implemented Zero-Knowledge Commitment Verification for State-Channel Off-Chain Settlements (issue #386).
+- **Reentrancy Guard Protocol**: Implemented Cross-Contract Call Reentrancy Guard Protocol (issue #388).
 - **`state-channel` (issue #458): virtual multi-hop HTLCs.** New `htlc` module
   locks slices of a channel's free escrow against a SHA-256 hash lock and
   settles them with a preimage (`add_htlc` / `resolve_htlc` / `refund_htlc`).
@@ -33,6 +105,17 @@ breaking changes bump the **minor** version, and they are called out as such.
   floor, and sends the proceeds to a configured burn address. Admin configures
   it once with `set_buyback_config`; anyone may trigger a swap with
   `execute_buyback` above the configured minimum size.
+- **`common`: standardized read-only telemetry view for frontend dashboards.**
+  New `telemetry` module (`contracts/common/src/telemetry.rs`) defines the
+  canonical `Telemetry` response struct — total/open/closed/disputed/finalized
+  channel counts, active escrow sum, and cumulative fees collected, stamped
+  with the ledger sequence and wall-clock timestamp — plus the
+  `TelemetryProvider` trait and generated `TelemetryClient` so dashboards pull
+  one aggregated snapshot cross-contract. The view is strictly read-only:
+  no writes, no TTL extension, no authorization, and O(1) targeted storage
+  reads (one `instance().get` per field, never record iteration), so the CPU
+  cost is independent of channel/refund volume. Includes unit, read-only
+  property, and completeness tests.
 - **`common` (issue #436): constant-time cryptographic comparison.** New
   `constant_time_eq(a, b)` helper (`contracts/common/src/constant_time.rs`)
   compares byte slices without short-circuiting: every byte and the length
@@ -165,7 +248,7 @@ breaking changes bump the **minor** version, and they are called out as such.
   and `DailyLimitSet`.
 - **`state-channel` (issue #412): cooperative mutual close.** The receiver
   registers an Ed25519 key with `register_receiver_key`. `mutual_close(final_state,
-  sig_a, sig_b)` then checks both signatures over a domain-separated
+sig_a, sig_b)` then checks both signatures over a domain-separated
   `MutualCloseState` (bound to the contract and channel id), requires the
   split to add up to the escrow, pays both parties at once from `Open`,
   `Closed` or `Disputed`, deletes the channel's storage entries and emits
@@ -192,6 +275,39 @@ breaking changes bump the **minor** version, and they are called out as such.
   protocol treasury or a merchant rebate pool (default: the merchant).
   **Behaviour change:** a refund larger than the liquid float but covered by
   deployed principal now succeeds instead of failing with `InsufficientFloat`.
+- **`refund-vault-factory` (issue #472): deterministic CREATE2-style vault
+  deployments.** New `deploy_for_participants(init, buyer)` derives the
+  deployment salt as `sha256(buyer ‖ merchant)` (a pure function of the escrow
+  participants) and deploys the vault through the existing
+  counter-independent `create_vault(salt)` path, reusing its `SaltCollision`
+  guard. `predict_address(buyer, merchant)` exposes
+  `with_current_contract(salt).deployed_address()`, so two parties can agree
+  on — and even pre-fund — an escrow address off-chain before the factory
+  deploys it.
+- **`refund-vault` (issue #474): NFT escrow.** New `deposit_nft`,
+  `claim_nft`, `refund_nft` and `get_nft_escrow` let a vault escrow Soroban
+  non-fungible tokens alongside the fungible float. NFTs go through the
+  standard non-fungible surface (`owner(token_id)`, `transfer(from, to,
+token_id)`) rather than SEP-41, are keyed by exact `(contract, token_id)`,
+  and `claim_nft`/`refund_nft` return the very token id released. Reentrancy
+  and pause guards are shared with the fungible path; new errors
+  `NftAlreadyEscrowed`, `NftNotOwned`, `NftEscrowNotFound`.
+- **`refund-policy-vdf` (issue #469): dispute fallback oracle.** When the
+  primary arbitrators time out, `request_fallback_dispute` escalates a
+  dispute to an external optimistic-oracle-style fallback oracle;
+  `build_fallback_oracle_request` hands the dispute to it as an XDR payload;
+  and `settle_fallback_dispute` (oracle-authorized only) records the ruling.
+  Disputes live in a bounded persistent ledger inside the otherwise-stateless
+  policy contract, readable via `get_fallback_dispute`. New errors
+  `DisputeNotFound`, `DisputeClosed`.
+- **`governance` (issue #475): optimistic execution queue.** `optimistic_submit`
+  queues a routine call executable immediately by anyone; members can veto it
+  during a 24-hour window with `veto_optimistic`, and cumulative quadratic
+  veto weight reaching a ~2/3 supermajority of total weight locks it so
+  `execute_optimistic` reverts with `OptimisticVetoed`. Vetoes close after
+  the window (`ChallengeWindowClosed`), a proposal executes exactly once
+  (`AlreadyExecuted`), and a member vetoes once (`AlreadyVetoed`).
+  `get_optimistic_proposal` exposes the queue state.
 - **`state-channel` (issue #423): multi-asset collateral pooling.** New
   `open_multi_asset_channel` escrows several tokens in one channel, tracked
   per token as a `BalanceRecord`. Signed `MultiAssetState`s must name exactly
@@ -220,7 +336,7 @@ breaking changes bump the **minor** version, and they are called out as such.
 - **`stream-vault` (issue #410): streaming micro-disbursement schedules.**
   New standalone contract, constructed with `(merchant, token)`.
   `create_stream(buyer, start_ledger, stop_ledger, rate_per_ledger,
-  deposit)` escrows a buyer's deposit and streams it linearly to the
+deposit)` escrows a buyer's deposit and streams it linearly to the
   merchant; the claimable balance is `min(deposit, (ledger - start) * rate)`
   less prior claims. `claim_stream` is permissionless and closes the stream
   once the stop ledger is reached. The buyer can `pause_stream` /
@@ -233,7 +349,7 @@ breaking changes bump the **minor** version, and they are called out as such.
 - **`multisig-account` (issue #425): Ed25519 signature malleability protection.**
   New `crypto` module rejects any signature whose `s` scalar is not strictly
   below the group order `L` (e.g. the malleated twin `(R, s + L)`) with
-  `Error::NonCanonicalSignature` *before* host verification; exposed as the
+  `Error::NonCanonicalSignature` _before_ host verification; exposed as the
   `verify_ed25519` entrypoint. Also restores the crate's build (misplaced
   module docs, invalid `[u8; 32]` contract types, bad zero-address strkey) and
   makes `rotate_signers_and_threshold` require the account's own auth.
@@ -313,6 +429,7 @@ breaking changes bump the **minor** version, and they are called out as such.
   voting window (`contracts/governance/src/quorum.rs`), so inactive proposals
   late in their window need less "yes" weight to pass — but never beneath the
   floor, and "yes" must still outweigh "no".
+
 ### Performance
 
 - **`refund-vault`: nonce-key allocation halved in `check_and_bump_user_nonce`
@@ -347,6 +464,7 @@ breaking changes bump the **minor** version, and they are called out as such.
   `test_events_emitted`, removing the repeated field-set boilerplate.
 
 ### Fixed
+
 - **Build fixes for code merged without compiling.** `governance` declares
   its `voting` and `math` modules and no longer moves `member` before reuse;
   stray `#![no_std]` attributes in submodules (`governance` `ragequit.rs` /
@@ -439,7 +557,7 @@ breaking changes bump the **minor** version, and they are called out as such.
   vault and factory formerly stored their `Option<Address>` policy fields
   verbatim, so a cleared policy left a `Void` in the ledger, which the host
   rejects/breaks on in several read paths (observed as `Error(Context,
-  InvalidAction)` and abort traps in the wasm constructor path). Policy fields
+InvalidAction)` and abort traps in the wasm constructor path). Policy fields
   are now written only when `Some`, and setters `remove()` the key on `None`.
   Absent key ⇔ unconfigured, which is the correct on-chain semantic anyway
   (`Void` is not a legal contract-data value).
@@ -494,7 +612,7 @@ breaking changes bump the **minor** version, and they are called out as such.
   `COMMIT_MIN_DELAY_LEDGERS` (7) ledgers later to surface and consume the
   action. `reveal` re-derives the hash from the plaintext and rejects a
   mismatch (`CommitMismatch`), a reveal before the delay (`CommitDelayNot
-  Elapsed`), a reveal with no pending commit (`NoCommit`), a reveal under a
+Elapsed`), a reveal with no pending commit (`NoCommit`), a reveal under a
   different operation than the one committed (`CommitOperationMismatch`), and
   a duplicate pending commit (`CommitAlreadyExists`). Commitments are
   merchant-only and single-use. New error codes 305–309 are appended without
@@ -503,7 +621,7 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 - **VDF-gated refunds for `RefundVault`** (issue #138): the refund policy now
   carries a Verifiable Delay Function requirement — `propose_policy(ledgers,
-  deadline, vdf_delay)` configures a delay in squarings (subject to the same
+deadline, vdf_delay)` configures a delay in squarings (subject to the same
   timelock) and `execute_policy` applies it. When the policy has a delay
   configured, `refund`, every claim in `claim_batch`, and every item in
   `process_batch` must supply a valid **Wesolowski VDF proof** that the delay
@@ -511,13 +629,13 @@ breaking changes bump the **minor** version, and they are called out as such.
   (302), with an invalid or premature one with `InvalidVdfProof` (303), and a
   proof supplied against a policy with no delay with `VdfNotConfigured` (304).
   The proof is bound to the payment (challenge = `sha256(payment_ref)`), so it
-  cannot be replayed across payments, and the delay is *computational* — a
+  cannot be replayed across payments, and the delay is _computational_ — a
   validator that controls block timestamps or transaction ordering cannot
   shorten it without factoring the contract's fixed 1024-bit modulus. The
   verifier (`contracts/refund-vault/src/vdf.rs`) runs in pure WASM via
   `crypto-bigint` (already in the dependency tree, so no new transitive
   crates), is exposed publicly as read-only `verify_vdf(challenge, delay,
-  proof)` for randomness-verification flows, and its cost is pinned by a
+proof)` for randomness-verification flows, and its cost is pinned by a
   budget test (a verification measures ≈51k CPU units — about a tenth of a
   refund call). The new `get_vdf_delay()` getter exposes the configured delay.
   This is a **breaking change** for clients: the `propose_policy` signature is
@@ -534,7 +652,6 @@ breaking changes bump the **minor** version, and they are called out as such.
   and saving computational overhead on-chain. Added `verify_zk_proof` to verify
   Groth16 proofs against verifying keys and public inputs, and introduced
   `Error::InvalidProof` (code 203).
-
 
 - **Best-effort batch refunds for `RefundVault`**: `process_batch(refunds)`
   processes up to 100 claims in one transaction (`Vec<RefundParam>`, same shape
@@ -624,7 +741,6 @@ breaking changes bump the **minor** version, and they are called out as such.
   activates `soroban-sdk`'s `testutils` feature, which is not supported on the
   `wasm32v1-none` target and made every wasm build fail at the SDK boundary.
 
-
   The `.wasm-budget.json` size budgets are updated to the current deterministic
   release builds (receipt-anchor 33,067 B, refund-vault 85,453 B) with ~5%
   headroom — the exact-pin approach kept breaking on toolchain drift, and the
@@ -643,7 +759,6 @@ breaking changes bump the **minor** version, and they are called out as such.
   Batch-size instruction measurements were added to the ReceiptAnchor test suite
   and documented in `docs/BENCHMARKS.md`.
 
-
 - **Advanced WASM Memory Management for Merkle Proofs** (issue #139):
   Refactored `ReceiptShard::verify_receipt` to copy host vector inputs into a stack-allocated
   static buffer (`proof_buffer: [[u8; 32]; 128]`) and perform intermediate hashing using the pure Wasm
@@ -659,6 +774,18 @@ breaking changes bump the **minor** version, and they are called out as such.
   `docs/contracts.mdx`.
 
 ### Security
+
+- **`multisig-account` (issue #449): 14-day TTL expiration for stale multisig
+  approvals.** Every approval of a queued transaction is stamped with a
+  `created_at` ledger timestamp (`ApprovalRecord`, stored under
+  `DataKey::TimelockApproval`) and only counts toward the threshold while its
+  age is strictly below `APPROVAL_TTL_SECONDS` (`1_209_600` = 14 days), so a
+  partial quorum can no longer be assembled against an intent nobody stands
+  behind anymore. `prune_stale_approvals` drops expired records the moment the
+  threshold is evaluated and `clear_approvals` drops the remainder when the
+  entry executes or is cancelled; a shortfall caused by pruning surfaces as
+  `Error::StaleSignature` rather than a bare `Error::InsufficientSignatures`,
+  and an expired approval no longer blocks its signer from voting again.
 
 - **Merchant-only float funding is a documented guarantee** (issue #157):
   `docs/SECURITY_MODEL.md` now states it explicitly — only the merchant's own
@@ -844,10 +971,10 @@ Both:
 **The testnet deployment has deliberately not been updated to `0.2.0`.** The
 contracts live at:
 
-| Contract | Contract ID | Version deployed |
-|---|---|---|
-| `ReceiptAnchor` | `CBHRJU7CF4XIFRNDITFHNQHABKBMFM2FYFHLGWN3JGSFYYCDSMDAWPRV` | `0.1.0` |
-| `RefundVault` | `CCMBM44EJUGD52G4LSMGHSXMAH2KSAQZX7VOYY4TTBF5BK4D7M4IHRQA` | `0.1.0` |
+| Contract        | Contract ID                                                | Version deployed |
+| --------------- | ---------------------------------------------------------- | ---------------- |
+| `ReceiptAnchor` | `CBHRJU7CF4XIFRNDITFHNQHABKBMFM2FYFHLGWN3JGSFYYCDSMDAWPRV` | `0.1.0`          |
+| `RefundVault`   | `CCMBM44EJUGD52G4LSMGHSXMAH2KSAQZX7VOYY4TTBF5BK4D7M4IHRQA` | `0.1.0`          |
 
 Soroban deployment mints a new contract ID. Redeploying would invalidate every
 published address — including the ones the public receipt verifier at
@@ -874,7 +1001,6 @@ the transactions that created them are recorded in
 [0.2.0]: https://github.com/accensa/accensa-contracts/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/accensa/accensa-contracts/releases/tag/v0.1.0
 
-
 ## [Unreleased]
-- Fixed issues
 
+- Fixed issues

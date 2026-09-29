@@ -22,15 +22,15 @@
 //!   skew) saturates to an age of `0` and stays fresh.
 //! - **Consequences.** Stale approvals are removed from `approval_count` and
 //!   from the materialized approver list, and a shortfall caused by pruning
-//!   surfaces as [`Error::StaleSignature`] rather than a bare
-//!   [`Error::InsufficientSignatures`], so a caller can tell "you never had
-//!   quorum" from "your quorum expired". An expired approval does not block
-//!   its signer from voting again.
+//!   surfaces as [`crate::Error::StaleSignature`] rather than a bare
+//!   [`crate::Error::InsufficientSignatures`], so a caller can tell "you
+//!   never had quorum" from "your quorum expired". An expired approval does
+//!   not block its signer from voting again.
 
 use soroban_sdk::{contracttype, Address, Env, Vec};
 
 use crate::timelock::QueuedTransaction;
-use crate::{DataKey, Error};
+use crate::DataKey;
 
 /// Maximum age of an approval before it goes stale: 14 days in seconds
 /// (`14 * 24 * 60 * 60 = 1_209_600`).
@@ -64,19 +64,19 @@ fn approval_key(queue_id: u64, signer: &Address) -> DataKey {
 
 /// Register `signer`'s approval of `queue_id`, stamped with [`now`].
 pub(crate) fn record_approval(env: &Env, queue_id: u64, signer: &Address) {
-    env.storage()
-        .persistent()
-        .set(
-            &approval_key(queue_id, signer),
-            &ApprovalRecord {
-                created_at: now(env),
-            },
-        );
+    env.storage().persistent().set(
+        &approval_key(queue_id, signer),
+        &ApprovalRecord {
+            created_at: now(env),
+        },
+    );
 }
 
 /// The stored record for `signer`'s approval of `queue_id`, if any.
 pub fn approval_record(env: &Env, queue_id: u64, signer: &Address) -> Option<ApprovalRecord> {
-    env.storage().persistent().get(&approval_key(queue_id, signer))
+    env.storage()
+        .persistent()
+        .get(&approval_key(queue_id, signer))
 }
 
 /// True when `signer` has a recorded approval of `queue_id` that is still
@@ -171,20 +171,9 @@ mod tests {
 
     /// Queue `required` approvals and collect them from `signers` at the
     /// current timestamp. Returns the queue ID.
-    fn queue_with_approvals(
-        env: &Env,
-        id: &Address,
-        required: u32,
-        signers: &[&Address],
-    ) -> u64 {
+    fn queue_with_approvals(env: &Env, id: &Address, required: u32, signers: &[&Address]) -> u64 {
         env.as_contract(id, || {
-            let queue_id = queue_transaction(
-                env,
-                hash(env),
-                0,
-                required,
-                Address::generate(env),
-            );
+            let queue_id = queue_transaction(env, hash(env), 0, required, Address::generate(env));
             for signer in signers {
                 approve_queued_transaction(env, queue_id, signer).unwrap();
             }
@@ -255,14 +244,14 @@ mod tests {
             let queued = get_queued_transaction(&env, queue_id).unwrap();
             assert_eq!(queued.approval_count, 0);
             assert!(queued.approvers.is_empty());
-            assert!(!env.storage().persistent().has(&DataKey::TimelockApproval(
-                queue_id,
-                s1.clone()
-            )));
-            assert!(!env.storage().persistent().has(&DataKey::TimelockApproval(
-                queue_id,
-                s2.clone()
-            )));
+            assert!(!env
+                .storage()
+                .persistent()
+                .has(&DataKey::TimelockApproval(queue_id, s1.clone())));
+            assert!(!env
+                .storage()
+                .persistent()
+                .has(&DataKey::TimelockApproval(queue_id, s2.clone())));
             assert!(!has_fresh_approval(&env, queue_id, &s1));
         });
     }
@@ -305,7 +294,12 @@ mod tests {
 
             let record = approval_record(&env, queue_id, &s1).unwrap();
             assert_eq!(record.created_at, APPROVAL_TTL_SECONDS);
-            assert_eq!(get_queued_transaction(&env, queue_id).unwrap().approval_count, 1);
+            assert_eq!(
+                get_queued_transaction(&env, queue_id)
+                    .unwrap()
+                    .approval_count,
+                1
+            );
 
             assert!(execute_queued_transaction(&env, queue_id).is_ok());
         });
@@ -339,7 +333,12 @@ mod tests {
                 Err(Error::InsufficientSignatures)
             );
             // Nothing was pruned, so the recorded quorum is untouched.
-            assert_eq!(get_queued_transaction(&env, queue_id).unwrap().approval_count, 2);
+            assert_eq!(
+                get_queued_transaction(&env, queue_id)
+                    .unwrap()
+                    .approval_count,
+                2
+            );
         });
     }
 }
