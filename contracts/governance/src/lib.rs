@@ -74,7 +74,7 @@ mod voting;
 
 pub use liquid_staking::{
     Burn, ExchangeRate, LiquidStaking, LiquidStakingClient, LiquidStakingDataKey,
-    LiquidStakingError, Mint, UserData,
+    LiquidStakingError, Mint, UserData, UserData as LiquidStakingUserData,
 };
 
 pub mod optimistic;
