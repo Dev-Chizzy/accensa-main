@@ -33,6 +33,21 @@ breaking changes bump the **minor** version, and they are called out as such.
   id, big-endian i128 amount that must be positive; anything else is
   `Error::InvalidProof`, so a future version cannot silently decode as v1), and
   each `message_id` is recorded and refused on replay (`Error::AlreadyRefunded`).
+- **`insurance` (issue #445): Compound-style interest accrual on the
+  insurance pool.** New `accensa-insurance` contract
+  (`contracts/insurance`, `src/interest.rs`) models a lending pool at 1e18
+  fixed-point precision: utilization in basis points drives an algorithmic
+  borrow rate (`BASE_RATE_BPS + SLOPE_BPS * utilization`) and a supply rate
+  reduced by a 10% reserve factor; global borrow/supply indexes compound as
+  `index * (1 + rate * dt)` and update on every interaction. Suppliers
+  deposit/withdraw capital, borrowers draw against their settled supplied
+  balance (`ExceedsCollateral` above it, `InsufficientLiquidity` above the
+  pool float), and every call settles the user's accrued interest into their
+  checkpointed balances before mutating positions. Withdrawals are rejected
+  when they would leave `borrowed > supplied - amount`, preventing
+  collateral withdrawal that leaves debt unbacked. Includes 16 tests
+  covering accrual, liquidity, collateral, settlement, and the withdrawal
+  safeguard.
 - **`receipt-shard` (issue #437): shard storage consolidation.** Router-authorized source shards can migrate exact `BatchRecord` values into a destination shard, verify the returned record before deletion, emit `ShardsConsolidated`, and mark drained sources inactive to stop further writes.
 - **`state-channel` (issue #431): anti-sniping late counter-proof extension.** A
   valid counter-proof submitted within the final 50 ledgers of the dispute window
