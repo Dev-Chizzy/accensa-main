@@ -8,6 +8,8 @@ breaking changes bump the **minor** version, and they are called out as such.
 
 ## [Unreleased]
 
+- security(multisig): implement 14-day TTL expiration for pending signatures and approvals (#449)
+
 ### Added
 - **`privacy` (issue #440): Groth16 verification for concealed escrow amounts.**
   New `privacy` contract (`contracts/privacy/`) holds an escrow against a
@@ -333,7 +335,7 @@ sig_a, sig_b)` then checks both signatures over a domain-separated
   `claim_nft`, `refund_nft` and `get_nft_escrow` let a vault escrow Soroban
   non-fungible tokens alongside the fungible float. NFTs go through the
   standard non-fungible surface (`owner(token_id)`, `transfer(from, to,
-  token_id)`) rather than SEP-41, are keyed by exact `(contract, token_id)`,
+token_id)`) rather than SEP-41, are keyed by exact `(contract, token_id)`,
   and `claim_nft`/`refund_nft` return the very token id released. Reentrancy
   and pause guards are shared with the fungible path; new errors
   `NftAlreadyEscrowed`, `NftNotOwned`, `NftEscrowNotFound`.
@@ -845,6 +847,18 @@ proof)` for randomness-verification flows, and its cost is pinned by a
 
 ### Security
 
+- **`multisig-account` (issue #449): 14-day TTL expiration for stale multisig
+  approvals.** Every approval of a queued transaction is stamped with a
+  `created_at` ledger timestamp (`ApprovalRecord`, stored under
+  `DataKey::TimelockApproval`) and only counts toward the threshold while its
+  age is strictly below `APPROVAL_TTL_SECONDS` (`1_209_600` = 14 days), so a
+  partial quorum can no longer be assembled against an intent nobody stands
+  behind anymore. `prune_stale_approvals` drops expired records the moment the
+  threshold is evaluated and `clear_approvals` drops the remainder when the
+  entry executes or is cancelled; a shortfall caused by pruning surfaces as
+  `Error::StaleSignature` rather than a bare `Error::InsufficientSignatures`,
+  and an expired approval no longer blocks its signer from voting again.
+
 - **Merchant-only float funding is a documented guarantee** (issue #157):
   `docs/SECURITY_MODEL.md` now states it explicitly — only the merchant's own
   funds are ever at stake, a third party cannot contribute float the merchant
@@ -1058,7 +1072,6 @@ the transactions that created them are recorded in
 [0.3.0]: https://github.com/accensa/accensa-contracts/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/accensa/accensa-contracts/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/accensa/accensa-contracts/releases/tag/v0.1.0
-
 
 ## [Unreleased]
 - Fixed issues
