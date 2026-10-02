@@ -71,16 +71,10 @@ mod ragequit;
 mod ring_sig;
 pub mod simulation;
 mod voting;
-mod liquid_staking;
-
-pub use liquid_staking::{
-    LiquidStakingError, LiquidStakingDataKey, ExchangeRate, UserData,
-    Mint, Burn,
-};
 
 pub use liquid_staking::{
     Burn, ExchangeRate, LiquidStaking, LiquidStakingClient, LiquidStakingDataKey,
-    LiquidStakingError, Mint, UserData, UserData as LiquidStakingUserData,
+    LiquidStakingError, Mint, UserData,
 };
 
 pub mod optimistic;
